@@ -168,6 +168,7 @@ class EventTranslator {
     switch (event.type) {
       case "message_start":
         if (event.message.id) this.output.responseId = event.message.id;
+        if (event.message.model && event.message.model !== this.model.id) this.output.responseModel = event.message.model;
         updateUsage(this.output, this.model, event.message.usage);
         break;
       case "content_block_start":
@@ -362,10 +363,12 @@ export function streamClaudeCode(
       const frames = prepareFrames(transcript.messages);
       const initialSystemMessages = getInitialSystemMessages(transcript.messages);
       const preparedTools = prepareTools(tools);
+      // Claude Code otherwise caps output at its own default, far below the model's limit.
+      const maxTokens = options?.maxTokens ?? (model.maxTokens > 0 ? model.maxTokens : undefined);
       const extraBody = buildExtraBody(
         model.id,
         nativeTranscript?.requestTools ?? preparedTools.nativeTools,
-        options,
+        { ...options, maxTokens },
       );
       const translator = new EventTranslator(model, output, stream);
 

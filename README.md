@@ -1,5 +1,63 @@
 # pi-claude-code
 
+## About this fork
+
+This is a fork of
+[earendil-works/pi-claude-code](https://github.com/earendil-works/pi-claude-code).
+It adds upstream pull requests that were still open and unmerged when the fork
+was made, plus one fix of its own. Together they make the `claude-code`
+provider behave more like the same model through Pi's `anthropic` provider:
+less repeated reasoning, fewer output tokens, and the model's full context
+window.
+
+The upstream pull requests were cherry-picked with `git cherry-pick -x` in this
+order, so each commit keeps its original author and names the commit it came
+from:
+
+1. [#51](https://github.com/earendil-works/pi-claude-code/pull/51) tags
+   replayed assistant turns with their model. Without it, Claude Code strips
+   the earlier turns' thinking, so the model works its reasoning out again on
+   every step
+   ([#52](https://github.com/earendil-works/pi-claude-code/issues/52)).
+2. [#57](https://github.com/earendil-works/pi-claude-code/pull/57) omits the
+   earlier turns' effort setting when the fallback system snapshot is
+   replayed.
+3. [#65](https://github.com/earendil-works/pi-claude-code/pull/65) routes a
+   model by its exact ID, so a model is not run through a family alias that
+   now points at a different model.
+4. [#66](https://github.com/earendil-works/pi-claude-code/pull/66) adds the
+   beta header that the per-message effort setting requires.
+5. [#69](https://github.com/earendil-works/pi-claude-code/pull/69) passes the
+   model's output limit to Claude Code, which otherwise caps output at 32K and
+   can spend all of it on thinking.
+6. [#39](https://github.com/earendil-works/pi-claude-code/pull/39) answers
+   tool calls left without a result by an aborted or failed turn. Without it,
+   every later request in that session fails with `tool_use ids were found
+   without tool_result blocks`
+   ([#49](https://github.com/earendil-works/pi-claude-code/issues/49)).
+
+Order matters only where two pull requests touch the same files: #51 and #57
+both change `src/claude-cli.ts`, and #51 and #69 both change `src/stream.ts`.
+Each pull request applies cleanly to upstream `main` on its own, and the
+sequence above applies without conflicts. No other order has been tested.
+
+The fork's own commit fixes a problem no upstream issue or pull request covers.
+Claude Code can serve a model before Pi's bundled Anthropic catalog lists it.
+Fable 5.2 was one: it matched no built-in model and fell back to a 200K context
+window and 64K output limit, so Pi compacted it at about 190K tokens when the
+API accepts 1M. An undated model missing from Pi's catalog now takes the
+context window and output limit of the newest older model in its family.
+Pricing is not inferred, and a model with no older model in its family keeps
+200K and 64K.
+
+The tests run on Node 24. Node 26 rejects the `--experimental-transform-types`
+flag that `npm test` passes.
+
+The rest of this README is upstream's, except for the installation
+instructions, which point at this fork.
+
+## Overview
+
 This Pi extension lets you use your Claude Pro or Max subscription in Pi by
 routing all Claude model requests through the official Claude Code CLI.
 
@@ -38,11 +96,27 @@ execution. Claude Code only talks to the model. It never runs tools itself.
 ## Installation
 
 ```sh
-pi install https://github.com/earendil-works/pi-claude-code
+pi install https://github.com/losandes/pi-claude-code
+```
+
+This installs the fork's `main` branch, and `pi update --extensions`
+reconciles it with `main`. To stay on one commit instead, install
+`git:github.com/losandes/pi-claude-code@<commit>`.
+
+If you already have the upstream extension installed, remove it first. Both
+register the `claude-code` provider:
+
+```sh
+pi remove https://github.com/earendil-works/pi-claude-code
 ```
 
 Then pick a model from the **Claude Code Subscription (Experimental)** provider
 in Pi.
+
+Pi saves this provider's model list and refreshes it when Pi starts in
+interactive mode or when `/model` opens. `pi update --models` does not refresh
+it. If a model still shows its old context window after installing, start Pi
+interactively once.
 
 ## Login and logout
 

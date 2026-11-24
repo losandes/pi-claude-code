@@ -90,9 +90,58 @@ function withoutContextSuffix(model: string): string {
   return model.replace(/\[1m\]$/u, "");
 }
 
+/**
+ * The `--model` value that runs exactly this catalog row. Claude Code repoints its family aliases
+ * (`sonnet`, `haiku`, `opus`) at newer models, so a row is routed by the model it resolved to, never
+ * by its alias; the 1M-context suffix is kept. Only `default` stays an alias: it means "Claude Code's
+ * own choice". Unresolved rows keep their original route.
+ */
+function nativeRoute(info: DiscoveredClaudeModel): string {
+  if (info.value === "default" || !info.resolvedModel) return info.value;
+  const longContext = info.value.endsWith("[1m]") || info.resolvedModel.endsWith("[1m]");
+  return `${withoutContextSuffix(info.resolvedModel)}${longContext ? "[1m]" : ""}`;
+}
+
 function canonicalModelId(info: DiscoveredClaudeModel): string {
   if (info.value === "default") return "default";
   return withoutContextSuffix(info.resolvedModel || ALIASES[withoutContextSuffix(info.value)] || info.value);
+}
+
+const MODEL_VERSION = /^(claude-[a-z]+)-(\d+(?:-\d+)*)$/u;
+
+/** Version parts of an undated model id such as `claude-fable-5-1`; dated snapshots are not family heads. */
+function modelVersion(id: string): { family: string; parts: number[] } | undefined {
+  const match = MODEL_VERSION.exec(id);
+  if (!match) return undefined;
+  const parts = match[2].split("-").map(Number);
+  return parts.some((part) => part > 999) ? undefined : { family: match[1], parts };
+}
+
+function compareVersions(left: number[], right: number[]): number {
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/**
+ * The newest built-in model of the same family released before `id`. Claude Code serves models
+ * before Pi's bundled catalog lists them (Fable 5.2 arrived as an unknown id), and its discovery
+ * rows carry no context window or output limit. A successor keeps its predecessor's limits far more
+ * often than it falls back to 200K, so the predecessor's limits are the better guess.
+ */
+function predecessorModel(id: string): Model<"anthropic-messages"> | undefined {
+  const target = modelVersion(id);
+  if (!target) return undefined;
+  let best: { model: Model<"anthropic-messages">; parts: number[] } | undefined;
+  for (const model of Object.values(BUILTIN_ANTHROPIC_MODELS)) {
+    const candidate = modelVersion(model.id);
+    if (!candidate || candidate.family !== target.family) continue;
+    if (compareVersions(candidate.parts, target.parts) >= 0) continue;
+    if (!best || compareVersions(candidate.parts, best.parts) > 0) best = { model, parts: candidate.parts };
+  }
+  return best?.model;
 }
 
 function fallbackModel(info: DiscoveredClaudeModel, id: string): ClaudeCodeModel {
@@ -100,6 +149,8 @@ function fallbackModel(info: DiscoveredClaudeModel, id: string): ClaudeCodeModel
   const thinkingLevelMap = supported?.length
     ? (Object.fromEntries(supported.map((level) => [level, level])) as ClaudeCodeModel["thinkingLevelMap"])
     : undefined;
+  const predecessor = predecessorModel(id);
+  const longContext = /\b1M context\b/iu.test(info.description) || info.value.endsWith("[1m]");
   return {
     id,
     name: `${info.displayName} (Claude Code)`,
@@ -110,8 +161,8 @@ function fallbackModel(info: DiscoveredClaudeModel, id: string): ClaudeCodeModel
     ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: /\b1M context\b/iu.test(info.description) ? 1_000_000 : 200_000,
-    maxTokens: 64_000,
+    contextWindow: longContext ? 1_000_000 : (predecessor?.contextWindow ?? 200_000),
+    maxTokens: predecessor?.maxTokens ?? 64_000,
   };
 }
 
@@ -138,7 +189,7 @@ export function modelFromDiscovery(info: DiscoveredClaudeModel): ClaudeCodeModel
   const id = canonicalModelId(info);
   const builtinId = id === "default" ? withoutContextSuffix(info.resolvedModel || "") : id;
   const builtin = BUILTIN_ANTHROPIC_MODELS[builtinId];
-  NATIVE_ROUTE_BY_ID.set(id, info.value);
+  NATIVE_ROUTE_BY_ID.set(id, nativeRoute(info));
   NATIVE_TOOL_CHANGES_BY_ID.set(id, builtin?.compat?.supportsMidConvoToolChanges === true);
   ADAPTIVE_THINKING_BY_ID.set(id, info.supportsAdaptiveThinking === true);
   DISABLED_THINKING_BY_ID.set(
